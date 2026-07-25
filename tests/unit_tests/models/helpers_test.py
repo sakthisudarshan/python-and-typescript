@@ -3961,3 +3961,52 @@ def test_mixed_adhoc_and_physical_column_filters(
     assert not sqla_query.rejected_filter_columns
     assert "DisplayName" in sqla_query.applied_filter_columns
     assert "status" in sqla_query.applied_filter_columns
+
+
+def test_failed_adhoc_resolution_not_in_applied_columns(
+    database: Database,
+) -> None:
+    """
+    When an adhoc column label matches but ``adhoc_column_to_sqla`` raises
+    ``ColumnNotFoundException``, the label must appear in
+    ``rejected_filter_columns`` and NOT in ``applied_filter_columns``.
+    """
+    from unittest.mock import patch as _patch
+
+    from superset.connectors.sqla.models import SqlaTable, TableColumn
+    from superset.exceptions import ColumnNotFoundException
+
+    table = SqlaTable(
+        database=database,
+        schema=None,
+        table_name="t",
+        columns=[TableColumn(column_name="real_col", type="TEXT")],
+    )
+
+    def raise_on_bad_label(col, force_type_check=False, template_processor=None):
+        if getattr(col, "label", None) == "BadLabel":
+            raise ColumnNotFoundException("label not found in DB")
+        from superset.connectors.sqla.models import TableColumn as TC
+
+        tc = TC(column_name=col.get("sqlExpression", ""), type="TEXT")
+        return tc, None
+
+    with _patch.object(
+        type(table), "adhoc_column_to_sqla", side_effect=raise_on_bad_label
+    ):
+        sqla_query = table.get_sqla_query(
+            columns=[
+                {"label": "GoodLabel", "sqlExpression": "real_col", "expressionType": "SQL"},
+                {"label": "BadLabel", "sqlExpression": "nonexistent_col", "expressionType": "SQL"},
+            ],
+            filter=[
+                {"col": "GoodLabel", "op": "==", "val": "ok"},
+                {"col": "BadLabel", "op": "==", "val": "fail"},
+            ],
+            is_timeseries=False,
+            row_limit=10,
+        )
+
+    assert "GoodLabel" in sqla_query.applied_filter_columns
+    assert "BadLabel" not in sqla_query.applied_filter_columns
+    assert "BadLabel" in sqla_query.rejected_filter_columns

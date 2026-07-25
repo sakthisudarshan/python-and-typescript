@@ -4352,7 +4352,7 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             and (
                 col in self.column_names
                 or col in applied_template_filters
-                or col in adhoc_columns_by_label
+                or col in applied_adhoc_filters_columns
             )
         ] + applied_adhoc_filters_columns
 
