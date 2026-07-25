@@ -615,16 +615,20 @@ class StructuredContentStripperMiddleware(Middleware):
             # GlobalErrorHandlerMiddleware, ValueError, TypeError, etc. —
             # will cause encoding failures on the wire.
             mcp_call_id = _mcp_call_id_var.get(None)
-            # This is the documented "must never propagate" point, but
-            # formatting/sanitizing both call str(e) — a pathological
-            # __str__ would make this handler itself raise past the
-            # middleware chain. Fall back to the exception class name.
+            # This is the documented "must never propagate" point. The
+            # client-facing text must be SANITIZED — an exception that
+            # bypasses GlobalErrorHandlerMiddleware could otherwise leak
+            # raw internals (SQL fragments, connection strings, tokens) to
+            # the caller; every other client-facing error path already
+            # runs through _sanitize_error_for_logging. That call (and
+            # str(e) inside it) can itself raise on a pathological
+            # __str__, so guard it and fall back to the exception class
+            # name, which never propagates.
             try:
-                error_text = f"Error: {e}"
                 sanitized_message = _sanitize_error_for_logging(e)
             except Exception:  # noqa: BLE001
-                error_text = f"Error: {type(e).__name__}"
                 sanitized_message = type(e).__name__
+            error_text = f"Error: {sanitized_message}"
             if not isinstance(e, ToolError):
                 # GlobalErrorHandlerMiddleware converts every exception it
                 # sees into ToolError (and already invokes MCP_ERROR_HOOK
