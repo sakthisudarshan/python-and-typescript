@@ -22,6 +22,7 @@ import { styled, SupersetTheme } from '@apache-superset/core/theme';
 interface IconButtonProps extends HTMLAttributes<HTMLDivElement> {
   icon: JSX.Element;
   label?: string;
+  hideVisibleLabel?: boolean;
   onClick: MouseEventHandler<HTMLDivElement>;
   disabled?: boolean;
   'data-test'?: string;
@@ -59,6 +60,7 @@ const IconButton = forwardRef<HTMLDivElement, IconButtonProps>(
     {
       icon,
       label,
+      hideVisibleLabel,
       onClick,
       onKeyDown,
       disabled,
@@ -72,6 +74,7 @@ const IconButton = forwardRef<HTMLDivElement, IconButtonProps>(
       ref={ref}
       tabIndex={disabled ? -1 : 0}
       role="button"
+      aria-label={label}
       isDisabled={disabled}
       aria-disabled={disabled}
       data-test={dataTest}
@@ -88,7 +91,7 @@ const IconButton = forwardRef<HTMLDivElement, IconButtonProps>(
       }}
     >
       {icon}
-      {label && <StyledSpan>{label}</StyledSpan>}
+      {label && !hideVisibleLabel && <StyledSpan>{label}</StyledSpan>}
     </StyledDiv>
   ),
 );
