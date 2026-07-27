@@ -166,6 +166,7 @@ if TYPE_CHECKING:
     from superset.connectors.sqla.models import SqlMetric, TableColumn
     from superset.db_engine_specs import BaseEngineSpec
     from superset.models.core import Database
+    from superset.models.sql_lab import Query
 
 logger = logging.getLogger(__name__)
 
@@ -1624,7 +1625,9 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             if found_tables:
                 raise SupersetDisallowedSQLTableException(found_tables)
 
-    def query(self, query_obj: QueryObjectDict) -> QueryResult:
+    def query(
+        self, query_obj: QueryObjectDict, query: Query | None = None
+    ) -> QueryResult:
         """
         Executes the query and returns a dataframe.
 
@@ -1670,6 +1673,7 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
                 self.catalog,
                 self.schema,
                 mutator=assign_column_label,
+                query=query,
             )
         except Exception as ex:  # pylint: disable=broad-except
             # Re-raise SupersetErrorException (includes OAuth2RedirectError)
@@ -1871,7 +1875,9 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
 
         return df
 
-    def get_query_result(self, query_object: QueryObject) -> QueryResult:
+    def get_query_result(
+        self, query_object: QueryObject, query: Query | None = None
+    ) -> QueryResult:
         """
         Execute query and return results with full processing pipeline.
 
@@ -1884,9 +1890,17 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
         :param query_object: The query configuration
         :return: QueryResult with processed dataframe
         """
-        # Execute the base query
-        result = self.query(query_object.to_dict())
-        query = result.query + ";\n\n" if result.query else ""
+        # Execute the base query. Some datasource implementations (e.g., older
+        # connector implementations) may not accept a second `query` parameter
+        # on their `query()` method. Try passing the `query` model and fall back
+        # to calling without it if the implementation doesn't accept it.
+        try:
+            result = self.query(query_object.to_dict(), query=query)
+        except TypeError:
+            # Fallback for implementations that don't accept the optional
+            # `query` parameter (backwards compatibility)
+            result = self.query(query_object.to_dict())
+        query_str = result.query + ";\n\n" if result.query else ""
 
         # Process the dataframe if not empty
         df = result.df
@@ -1903,8 +1917,8 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
                 )
                 df = time_offsets["df"]
                 queries = time_offsets["queries"]
-                query += ";\n\n".join(queries)
-                query += ";\n\n"
+                query_str += ";\n\n".join(queries)
+                query_str += ";\n\n"
 
             # Execute post-processing operations
             try:
@@ -1914,7 +1928,7 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
 
         # Update result with processed data
         result.df = df
-        result.query = query
+        result.query = query_str
         result.from_dttm = query_object.from_dttm
         result.to_dttm = query_object.to_dttm
 
