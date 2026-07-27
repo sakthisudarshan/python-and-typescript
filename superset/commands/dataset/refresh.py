@@ -31,7 +31,10 @@ from superset.commands.dataset.exceptions import (
 from superset.connectors.sqla.models import SqlaTable
 from superset.daos.dataset import DatasetDAO
 from superset.datasets.datetime_format_detector import DatetimeFormatDetector
-from superset.exceptions import SupersetSecurityException
+from superset.exceptions import (
+    SupersetGenericDBErrorException,
+    SupersetSecurityException,
+)
 from superset.utils.decorators import on_error, transaction
 
 logger = logging.getLogger(__name__)
@@ -46,7 +49,23 @@ class RefreshDatasetCommand(BaseCommand):
     def run(self) -> Model:
         self.validate()
         assert self._model
-        self._model.fetch_metadata()
+        try:
+            self._model.fetch_metadata()
+        except SupersetGenericDBErrorException as ex:
+            # Virtual datasets whose SQL contains Jinja templates (e.g.
+            # ``{% if from_dttm %}``) cannot be parsed at save time
+            # because the templates have no runtime context — sqlglot
+            # then rejects the empty ``{% if %}`` block. The dataset
+            # row itself has already been persisted by
+            # ``UpdateDatasetCommand`` before this refresh runs, so
+            # treat the metadata refresh as best-effort rather than
+            # surfacing an "Invalid SQL" toast for a save the user
+            # already committed. See #38012.
+            logger.warning(
+                "Dataset column refresh skipped for %s: %s",
+                self._model.table_name,
+                ex.message,
+            )
 
         # Detect datetime formats if feature is enabled
         if current_app.config.get("DATASET_AUTO_DETECT_DATETIME_FORMATS", True):
