@@ -48,6 +48,12 @@ def mock_dataset() -> MagicMock:
         lambda sql, limit, force: f"{sql} LIMIT {limit}"
     )
 
+    # Pass-through with a recognizable marker, mirroring the ClickHouse
+    # engine-spec override shape
+    dataset.database.apply_sampling_read_limit_override = (
+        lambda sql: f"{sql} SETTINGS read_overflow_mode='break'"
+    )
+
     return dataset
 
 
@@ -280,3 +286,134 @@ def test_detect_column_format_with_leading_null_samples(
 
     assert detected_format == "%Y-%m-%d"
     mock_dataset.database.get_df.assert_called_once()
+
+
+def test_detect_column_format_applies_read_limit_override(
+    mock_dataset: MagicMock, mock_column: MagicMock
+) -> None:
+    """The sampling SQL runs through the database read-limit override."""
+    sample_data = pd.DataFrame({"date_column": ["2023-01-01"]})
+
+    captured_sql: list[str] = []
+
+    def capture_sql(sql: str, schema: str) -> pd.DataFrame:
+        captured_sql.append(sql)
+        return sample_data
+
+    mock_dataset.database.get_df.side_effect = capture_sql
+
+    detector = DatetimeFormatDetector(sample_size=100)
+    detector.detect_column_format(mock_dataset, mock_column)
+
+    assert len(captured_sql) == 1
+    assert captured_sql[0].endswith("SETTINGS read_overflow_mode='break'")
+
+
+def test_detect_column_format_read_limit_error_logs_warning(
+    mock_dataset: MagicMock,
+    mock_column: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An engine read-limit rejection logs at WARNING, not ERROR."""
+    mock_dataset.database.get_df.side_effect = Exception(
+        "Code: 158. DB::Exception: Limit for rows (controlled by "
+        "'max_rows_to_read' setting) exceeded. (TOO_MANY_ROWS)"
+    )
+
+    detector = DatetimeFormatDetector()
+    with caplog.at_level("WARNING"):
+        detected_format = detector.detect_column_format(mock_dataset, mock_column)
+
+    assert detected_format is None
+    read_limit_records = [
+        record
+        for record in caplog.records
+        if "Read limit prevented format detection" in record.getMessage()
+    ]
+    assert len(read_limit_records) == 1
+    assert read_limit_records[0].levelname == "WARNING"
+
+
+def test_detect_column_format_unexpected_error_still_logs_error(
+    mock_dataset: MagicMock,
+    mock_column: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Failures other than read-limit rejections keep ERROR severity."""
+    mock_dataset.database.get_df.side_effect = Exception("connection refused")
+
+    detector = DatetimeFormatDetector()
+    with caplog.at_level("WARNING"):
+        detected_format = detector.detect_column_format(mock_dataset, mock_column)
+
+    assert detected_format is None
+    error_records = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert len(error_records) == 1
+
+
+def test_detect_all_formats_summary_reports_detected_of_attempted(
+    mock_dataset: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The summary reports detected vs attempted counts."""
+    col1 = MagicMock(spec=TableColumn)
+    col1.column_name = "date1"
+    col1.is_temporal = True
+    col1.datetime_format = None
+    col1.expression = None
+
+    col2 = MagicMock(spec=TableColumn)
+    col2.column_name = "date2"
+    col2.is_temporal = True
+    col2.datetime_format = None
+    col2.expression = None
+
+    mock_dataset.columns = [col1, col2]
+
+    sample_data = pd.DataFrame({"date1": ["2023-01-01", "2023-01-02"]})
+    mock_dataset.database.get_df.side_effect = [
+        sample_data,
+        Exception("TOO_MANY_ROWS"),
+    ]
+
+    detector = DatetimeFormatDetector()
+    with caplog.at_level("INFO"):
+        results = detector.detect_all_formats(mock_dataset)
+
+    assert results == {"date1": "%Y-%m-%d", "date2": None}
+    summary = [
+        record
+        for record in caplog.records
+        if "Detected formats for" in record.getMessage()
+    ]
+    assert len(summary) == 1
+    assert "1 of 2 temporal columns" in summary[0].getMessage()
+
+
+def test_detect_all_formats_zero_detected_is_not_logged_as_success(
+    mock_dataset: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A 0-of-N run logs a WARNING summary, not a success-looking INFO."""
+    col1 = MagicMock(spec=TableColumn)
+    col1.column_name = "date1"
+    col1.is_temporal = True
+    col1.datetime_format = None
+    col1.expression = None
+
+    mock_dataset.columns = [col1]
+    mock_dataset.database.get_df.side_effect = Exception("TOO_MANY_ROWS")
+
+    detector = DatetimeFormatDetector()
+    with caplog.at_level("INFO"):
+        results = detector.detect_all_formats(mock_dataset)
+
+    assert results == {"date1": None}
+    summary = [
+        record
+        for record in caplog.records
+        if "Detected formats for" in record.getMessage()
+    ]
+    assert len(summary) == 1
+    assert summary[0].levelname == "WARNING"
+    assert "0 of 1 temporal columns" in summary[0].getMessage()

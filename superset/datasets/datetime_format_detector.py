@@ -122,6 +122,12 @@ class DatetimeFormatDetector:
             # This handles different SQL dialects (LIMIT, TOP, FETCH FIRST, etc.)
             sql = database.apply_limit_to_sql(sql, limit=self.sample_size, force=True)
 
+            # System-authored sampling over a physical table (virtual datasets
+            # returned above): engines like ClickHouse reject full-table-shaped
+            # queries from a pre-execution row estimate that ignores LIMIT, so
+            # let the engine spec bound the read instead of erroring.
+            sql = database.apply_sampling_read_limit_override(sql)
+
             # Execute query and get results
             df = database.get_df(sql, dataset.schema)
 
@@ -154,13 +160,35 @@ class DatetimeFormatDetector:
             return detected_format
 
         except Exception as ex:
-            logger.exception(
-                "Error detecting format for column %s.%s: %s",
-                dataset.table_name,
-                column.column_name,
-                str(ex),
-            )
+            if self._is_read_limit_error(ex):
+                # An engine read limit refusing the sample is an expected,
+                # handled condition (detection is skipped for the column), not
+                # an application error worth paging on.
+                logger.warning(
+                    "Read limit prevented format detection for column %s.%s: %s",
+                    dataset.table_name,
+                    column.column_name,
+                    str(ex),
+                )
+            else:
+                logger.exception(
+                    "Error detecting format for column %s.%s: %s",
+                    dataset.table_name,
+                    column.column_name,
+                    str(ex),
+                )
             return None
+
+    @staticmethod
+    def _is_read_limit_error(ex: Exception) -> bool:
+        """Return True when the exception is an engine read-limit rejection.
+
+        Matches ClickHouse's ``max_rows_to_read`` enforcement
+        (``TOO_MANY_ROWS``); other engines' equivalents can be added as they
+        are observed.
+        """
+        message = str(ex)
+        return "TOO_MANY_ROWS" in message or "max_rows_to_read" in message
 
     @transaction()
     def detect_all_formats(
@@ -203,8 +231,11 @@ class DatetimeFormatDetector:
 
         # Log results
         if results:
-            logger.info(
-                "Detected formats for %d columns in dataset %s",
+            detected = sum(1 for fmt in results.values() if fmt)
+            log_method = logger.info if detected else logger.warning
+            log_method(
+                "Detected formats for %d of %d temporal columns in dataset %s",
+                detected,
                 len(results),
                 dataset.table_name,
             )
