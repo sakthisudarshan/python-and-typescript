@@ -19,7 +19,7 @@
 import memoizeOne from 'memoize-one';
 import { isString, isBoolean } from 'lodash-es';
 import { isBlank } from '@apache-superset/core/utils';
-import { addAlpha, DataRecord } from '@superset-ui/core';
+import { addAlpha, DataRecord, rgbaToHex } from '@superset-ui/core';
 import tinycolor from 'tinycolor2';
 import {
   ColorFormatters,
@@ -27,6 +27,7 @@ import {
   ConditionalFormattingConfig,
   MultipleValueComparators,
   ResolvedColorFormatterResult,
+  ColorSchemeEnum,
 } from '../types';
 
 export const round = (num: number, precision = 0) =>
@@ -70,6 +71,9 @@ export const getOpacity = (
     ),
   );
 };
+
+const isSpecialColor = (value: unknown): value is ColorSchemeEnum =>
+  Object.values(ColorSchemeEnum).includes(value as ColorSchemeEnum);
 
 export const getColorFunction = (
   {
@@ -270,19 +274,35 @@ export const getColorFunction = (
     if (compareResult === false) return undefined;
     const { cutoffValue, extremeValue } = compareResult;
 
+    if (typeof colorScheme === 'string') {
+      if (isSpecialColor(colorScheme)) {
+        return colorScheme;
+      }
+      if (useGradient === false) {
+        return colorScheme;
+      }
+      if (alpha === undefined || alpha) {
+        return addAlpha(
+          colorScheme,
+          getOpacity(value, cutoffValue, extremeValue, minOpacity, maxOpacity),
+        );
+      }
+      return colorScheme;
+    }
+    const baseHexColor = rgbaToHex(colorScheme);
     // If useGradient is explicitly false, return solid color
     if (useGradient === false) {
-      return colorScheme;
+      return baseHexColor;
     }
 
     // Otherwise apply gradient (default behavior for backward compatibility)
     if (alpha === undefined || alpha) {
       return addAlpha(
-        colorScheme,
+        baseHexColor,
         getOpacity(value, cutoffValue, extremeValue, minOpacity, maxOpacity),
       );
     }
-    return colorScheme;
+    return baseHexColor;
   };
 };
 
