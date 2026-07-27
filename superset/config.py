@@ -2438,6 +2438,12 @@ SLACK_API_RATE_LIMIT_RETRY_COUNT = 2
 # patching code, consistent with the SMTP/CSV/screenshot timeouts.
 SLACK_API_TIMEOUT = 30
 
+# Application retry budget (in seconds) for each Slack channel across all files
+# and upload phases. Increase this for slow channels or large-file reports. Each
+# channel receives an independent budget, and the effective value is always at
+# least one second longer than SLACK_API_TIMEOUT.
+SLACK_SEND_RETRY_MAX_TIME = 150
+
 # The webdriver to use for generating reports when using Selenium (not Playwright).
 # This setting is ignored when PLAYWRIGHT_REPORTS_AND_THUMBNAILS is enabled, as
 # Playwright always uses Chromium regardless of this value.
